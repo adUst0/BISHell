@@ -5,6 +5,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/wait.h>
+#include "BISHell.h"
 
 static char* HOME = NULL;
 
@@ -26,23 +27,11 @@ BuiltinFunc builtinFunc[] = {
 	&shExit
 };
 
-/**
- * Return the number of built-in functions described in builtinNames[].
- *
- * @return 	the number of built-in functions
- */
 int builtinLen(void)
 {
 	return sizeof(builtinNames) / sizeof(char*);
 }
 
-/**
- * Change the working directory to the path described in arg_v[1].
- * If no path is specified and HOME is set, the working directory is set to HOME.
- *
- * @param 	char** arg_v 	array of argumеnts containing the command cd and the desired path
- * @return 	0 on success, -1 otherwise
- */
 int shCd(char **arg_v)
 {
 	if (!arg_v[1])
@@ -69,18 +58,11 @@ int shCd(char **arg_v)
 	}
 }
 
-/**
- * Stop the execution of the current proccess. 
- */
 int shExit(char **arg_v) 
 {
 	exit(EXIT_SUCCESS);
 }
 
-/**
- * Initialization of the shell.
- * If found, set the HOME variable. 
- */
 void shInit(void) 
 {
 	HOME = getenv("HOME");
@@ -90,226 +72,222 @@ void shInit(void)
 	}
 }
 
-/**
- * Main loop of the Shell.
- * Read new line from the standart input.
- * Split the line into arguments and execute them.
- */
 void shLoop(void)
 {
 	while(1)
 	{
-		char **arg_v = NULL;
-		char *buff = NULL;
-		int status;
+		command cmd = commandInit();
 
-		write(1, PROMPT, strlen(PROMPT));
-		buff = shReadLine();
-		arg_v = shParseLine(buff);
-		status = shExecute(arg_v);
+		write(STD_OUT, PROMPT, strlen(PROMPT));
+		shReadLine(&cmd);
+		shParseLine(&cmd);
 
-		free(buff);
-		free(arg_v);
+		commandDel(&cmd);
 	}
 }
 
-/**
- * Stop the execution of the current proccess.
- */
 void shTerminate() 
 {
 	exit(EXIT_SUCCESS);
 }
 
-/**
- * Read input in a buffer. 
- * If 0 non-whitespace symbols are read, NULL is returned.
- *
- * @return 	line read from standard input or NULL if only white spaces or 0 characters are read.
- */
-char* shReadLine() 
+void assertAlloc(void* p)
 {
-	char *buff = malloc(BUFF_LENGTH);
-	int buffSize = BUFF_LENGTH;
-	int i = 0;
-
-	if (!buff)
+	if(!p)
 	{
-		perror("Allocation error");
-		exit(EXIT_FAILURE);
+		write(2, "Allocation error!\n", strlen("Allocation error!\n"));
+		exit(EXIT_FAILURE);	
 	}
+}
 
-	char byte[1];
-	int readStatus = read(STD_IN, byte, 1);
+void shReadLine(command *cmd) 
+{
+	cmd->buff = malloc(BUFF_LENGTH);
+	int buffCapacity = BUFF_LENGTH;
+	int buffSize = 0;
+
+	assertAlloc(cmd->buff);
+
+	char byte;
+	int readStatus;
 
 	while(1)
 	{
-
-		if (readStatus == -1)
+		readStatus = read(STD_IN, &byte, 1);
+		switch(readStatus)
 		{
-			perror("I/O error");
-			exit(EXIT_FAILURE);
-		}
-		else if (readStatus == 0 || byte[0] == '\n')
-		{
-			if (i == 0)
-			{
-				return NULL;
-			}
-			else 
-			{	
-				buff[i] = '\0';
-				return buff;
-			}
-		}
-		else 
-		{
-			buff[i++] = byte[0];
-		}
-
-		if (i >= buffSize)
-		{
-			buffSize *= 2;
-			buff = realloc(buff, buffSize);
-			if (!buff)
-			{
-				perror("Allocation error");
+			case -1:
+				perror("I/O error");
 				exit(EXIT_FAILURE);
-			}
+			case 0:
+				cmd->buff[buffSize] = '\0';
+				return;
+			default:
+				if(byte == '\n')
+				{
+					cmd->buff[buffSize] = '\0';
+					return;
+				}
+				else
+				{
+					cmd->buff[buffSize++] = byte;
+				}
 		}
 
-		readStatus = read(STD_IN, byte, 1);
+		if (buffSize >= buffCapacity)
+		{
+			buffCapacity *= 2;
+			cmd->buff = realloc(cmd->buff, buffCapacity);
+			assertAlloc(cmd->buff);
+		}
 	}
 }
 
-/**
- * Split the buffer into command and arguments. 
- * If the buffer is NULL pointer, NULL is returned. 
- *  
- * @param 	char *buff 	containing line read from standard input
- * @return 	array of command and arguments or NULL if there is no command specified
- */
-char** shParseLine(char* buff) 
+void shParseLine(command *cmd) 
 {
-	if (!buff)
-	{
-		return NULL;
-	}
+	int capacity = ARGUMENTS;
+	int size = 0;
+	cmd->arguments = malloc(sizeof(char*) * capacity);
 
-	// Array that will store the arguments
-	char **arg_v = malloc(sizeof(char*) * ARGUMENTS);
-	int arg_vSize = ARGUMENTS;
-	int arg_vPos = 0;
+	if (cmd->buff[0] == '\0')
+	{
+		cmd->arguments[0] = NULL;
+		return;
+	}
 
 	// Current argument
 	char *arg = malloc(BUFF_LENGTH);
-	int argSize = BUFF_LENGTH;
-	int argPos = 0;
+	int argCapacity = BUFF_LENGTH;
+	int argSize = 0;
 
-	if(!arg_v || !arg)
+	assertAlloc(cmd->arguments);
+	assertAlloc(arg);
+
+	for(int buffPos = 0; cmd->buff[buffPos] != '\0'; buffPos++)
 	{
-		perror("Allocation error");
-		exit(EXIT_FAILURE);		
+		char c = cmd->buff[buffPos];
+		switch(c)
+		{
+			case ' ':
+				// Skip multiple whitespaces
+				if (argSize == 0)
+				{
+					continue;
+				}
+				arg[argSize] = '\0';
+				cmd->arguments[size++] = arg;
+				arg = malloc(BUFF_LENGTH);
+				argSize = 0;
+				assertAlloc(arg);
+				break;
+			case '&':
+				cmd->background = 1;
+				if (argSize != 0)
+				{
+					arg[argSize] = '\0';
+					cmd->arguments[size++] = arg;
+				}
+				else
+				{
+					free(arg);
+				}
+				cmd->arguments[size] = NULL;
+				shExecute(cmd);
+				cmd->background = 0;
+				for(int j = 0; j < size; j++) 
+					free(cmd->arguments[j]);
+				size = 0;
+				argCapacity = BUFF_LENGTH;
+				argSize = 0;
+				arg = malloc(argCapacity);
+				assertAlloc(arg);
+				break;
+			default:
+				arg[argSize++] = c;
+				break;
+		}
+
+		if (argSize >= argCapacity)
+		{
+			argCapacity *= 2;
+			arg = realloc(arg, argCapacity);
+			assertAlloc(arg);
+		}
+		if (size >= capacity)
+		{
+			capacity *= 2;
+			cmd->arguments = realloc(cmd->arguments, sizeof(char*) * capacity);
+			assertAlloc(cmd->arguments);
+		}
 	}
 
-	for(int buffPos = 0; buff[buffPos] != '\0'; buffPos++)
+	// If currently 0 non-whitespace symbols are read, don't add new empty argument to cmd->arguments
+	if (argSize != 0)
 	{
-		if (isspace(buff[buffPos]))
-		{
-			// Skip multiple whitespaces
-			if (argPos == 0)
-			{
-				continue;
-			}
-			arg[argPos] = '\0';
-			arg_v[arg_vPos++] = arg;
-			arg = malloc(BUFF_LENGTH);
-			argPos = 0;
-			if (!arg)
-			{
-				perror("Allocation error");
-				exit(EXIT_FAILURE);
-			}
-		}
-		else
-		{
-			arg[argPos++] = buff[buffPos];
-		}
-
-		if (argPos >= argSize)
-		{
-			argSize *= 2;
-			arg = realloc(arg, argSize);
-			if (!arg)
-			{
-				perror("Allocation error");
-				exit(EXIT_FAILURE);
-			}
-		}
-
-		if (arg_vPos >= arg_vSize)
-		{
-			arg_vSize *= 2;
-			arg_v = realloc(arg_v, sizeof(char*) * arg_vSize);
-			if (!arg_v)
-			{
-				perror("Allocation error");
-				exit(EXIT_FAILURE);
-			}
-		}
-	}
-
-	// If currently 0 non-whitespace symbols are read, don't add new empty argument to arg_v
-	if (argPos != 0)
-	{
-		arg[argPos] = '\0';
-		arg_v[arg_vPos++] = arg;
-		arg_v[arg_vPos] = NULL;
+		arg[argSize] = '\0';
+		cmd->arguments[size++] = arg;
+		cmd->arguments[size] = NULL;
 	}
 	else
 	{
-		arg_v[arg_vPos] = NULL;
+		cmd->arguments[size] = NULL;
 		free(arg);
 	}
-	return arg_v;
+
+	shExecute(cmd);
 }
 
-/**
- * Execute binary, system command or built-in command.
- *  
- * @param 	char **arg_v 	command and arguments
- * @return 	0 on success, -1 otherwise
- */
-int shExecute(char **arg_v) 
+int shExecute(command *cmd) 
 {
 	int status = 0;
 
-	if (!arg_v)
+	if (!cmd->arguments[0])
 	{
 		return 0;
 	}
 
 	for(int i = 0; i < builtinLen(); i++)
 	{
-		if (strcmp(builtinNames[i], arg_v[0]) == 0)
+		if (strcmp(builtinNames[i], cmd->arguments[0]) == 0)
 		{
-			status = (*builtinFunc[i])(arg_v);
+			status = (*builtinFunc[i])(cmd->arguments);
 			return status;
 		}
 	}
 
 	int pid = fork();
-	if (pid == 0)
+	switch(pid)
 	{
-		if (execvp(arg_v[0], arg_v) == -1) 
-		{
-			perror("Can't create process");
+		case 0: // child
+			if (execvp(cmd->arguments[0], cmd->arguments) == -1) 
+			{
+				perror("Can't create process");
+				exit(EXIT_FAILURE);
+			}
+			break;
+		case -1:
+			perror("Can't fork");
 			exit(EXIT_FAILURE);
-		}
+			break;
+		default: // father
+			if (!cmd->background) 
+			{
+				waitpid(pid, &status, 0);
+			}
+			else
+			{
+				printf("Background process created with PID: %d\n", pid);
+			}
+			break;
 	}
-	else 
-	{
-		wait(&status);
-		return status;
-	}
+
+	return status;	
+}
+
+int main()
+{
+	shInit();
+	shLoop();
+	shTerminate();
+	return EXIT_SUCCESS;
 }
