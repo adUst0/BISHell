@@ -7,8 +7,6 @@
 #include <sys/wait.h>
 #include "BISHell.h"
 
-static char* HOME = NULL;
-
 // Array of strings to store built-in commads.
 char *builtinNames[] = {
 	"cd",
@@ -20,8 +18,8 @@ char *builtinNames[] = {
 
 // Array of pointers to handle the built-in commads.
 BuiltinFunc builtinFunc[] = {
-	&shCd,
-	&shCd,
+	&shChdir,
+	&shChdir,
 	&shExit,
 	&shExit,
 	&shExit
@@ -32,7 +30,7 @@ int builtinLen(void)
 	return sizeof(builtinNames) / sizeof(char*);
 }
 
-int shCd(char **arg_v)
+int shChdir(char **arg_v)
 {
 	if (!arg_v[1])
 	{
@@ -65,7 +63,6 @@ int shExit(char **arg_v)
 
 void shInit(void) 
 {
-	HOME = getenv("HOME");
 	if (HOME)
 	{
 		chdir(HOME);
@@ -89,15 +86,6 @@ void shLoop(void)
 void shTerminate() 
 {
 	exit(EXIT_SUCCESS);
-}
-
-void assertAlloc(void* p)
-{
-	if(!p)
-	{
-		write(2, "Allocation error!\n", strlen("Allocation error!\n"));
-		exit(EXIT_FAILURE);	
-	}
 }
 
 void shReadLine(command *cmd) 
@@ -136,9 +124,7 @@ void shReadLine(command *cmd)
 
 		if (buffSize >= buffCapacity)
 		{
-			buffCapacity *= 2;
-			cmd->buff = realloc(cmd->buff, buffCapacity);
-			assertAlloc(cmd->buff);
+			resizeArr(cmd->buff, buffCapacity);
 		}
 	}
 }
@@ -209,17 +195,13 @@ void shParseLine(command *cmd)
 
 		if (argSize >= argCapacity)
 		{
-			argCapacity *= 2;
-			arg = realloc(arg, argCapacity);
-			assertAlloc(arg);
+			resizeArr(arg, argCapacity);
 		}
 		if (size >= capacity)
 		{
-			capacity *= 2;
-			cmd->arguments = realloc(cmd->arguments, sizeof(char*) * capacity);
-			assertAlloc(cmd->arguments);
+			resizeArr(cmd->arguments, capacity);
 		}
-	}
+	} 
 
 	// If currently 0 non-whitespace symbols are read, don't add new empty argument to cmd->arguments
 	if (argSize != 0)
@@ -259,6 +241,9 @@ int shExecute(command *cmd)
 	switch(pid)
 	{
 		case 0: // child
+			dup2(cmd->fdi, STD_IN);
+			dup2(cmd->fdo, STD_OUT);
+			dup2(cmd->fderr, STD_ERR);
 			if (execvp(cmd->arguments[0], cmd->arguments) == -1) 
 			{
 				perror("Can't create process");
