@@ -5,9 +5,12 @@ Supported features:
 * Arguments must be separated with whitespaces.
 * Built-in commands: ch, exit, quit.
 * Execution of background processes
+* I/O redirections. Examples: 
+	* ls -l > fo
+	* ls -l >> fo
+	* wc -c < fo
 
 TODO:
-* Redirections
 * Piping
 * Globbing
 * Commands history

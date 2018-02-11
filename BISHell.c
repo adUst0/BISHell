@@ -40,7 +40,7 @@ int shChdir(char **arg_v)
         }
         else
         {
-            write(STD_OUT, "cd: Missing argument\n", strlen("cd: Missing argument\n"));
+            write(STDOUT_FILENO, "cd: Missing argument\n", strlen("cd: Missing argument\n"));
         }
     }
     else
@@ -73,13 +73,17 @@ void shLoop(void)
 {
     while(1)
     {
-        command cmd = commandInit();
+        command *cmd = malloc(sizeof(command));
+        commandInit(cmd);
 
-        write(STD_OUT, PROMPT, strlen(PROMPT));
-        shReadLine(&cmd);
-        shParseLine(&cmd);
+        write(STDOUT_FILENO, PROMPT, strlen(PROMPT));
+        
+        shReadLine(cmd);
+        shParseLine(cmd);
+        shExecuteLine(cmd);
 
-        commandDel(&cmd);
+        commandDel(cmd);
+        free(cmd);
     }
 }
 
@@ -101,13 +105,13 @@ void shReadLine(command *cmd)
 
     while(1)
     {
-        readStatus = read(STD_IN, &byte, 1);
+        readStatus = read(STDIN_FILENO, &byte, 1);
         switch(readStatus)
         {
             case -1:
                 perror("I/O error");
                 exit(EXIT_FAILURE);
-            case 0:
+            case 0: 
                 cmd->buff[buffSize] = '\0';
                 return;
             default:
@@ -152,45 +156,18 @@ void shParseLine(command *cmd)
     for(int buffPos = 0; cmd->buff[buffPos] != '\0'; buffPos++)
     {
         char c = cmd->buff[buffPos];
-        switch(c)
+
+        if (c == ' ' && argSize != 0)
         {
-            case ' ':
-                // Skip multiple whitespaces
-                if (argSize == 0)
-                {
-                    continue;
-                }
-                arg[argSize] = '\0';
-                cmd->arguments[size++] = arg;
-                arg = malloc(BUFF_LENGTH);
-                argSize = 0;
-                assertAlloc(arg);
-                break;
-            case '&':
-                cmd->background = 1;
-                if (argSize != 0)
-                {
-                    arg[argSize] = '\0';
-                    cmd->arguments[size++] = arg;
-                }
-                else
-                {
-                    free(arg);
-                }
-                cmd->arguments[size] = NULL;
-                shExecute(cmd);
-                cmd->background = 0;
-                for(int j = 0; j < size; j++) 
-                    free(cmd->arguments[j]);
-                size = 0;
-                argCapacity = BUFF_LENGTH;
-                argSize = 0;
-                arg = malloc(argCapacity);
-                assertAlloc(arg);
-                break;
-            default:
-                arg[argSize++] = c;
-                break;
+            arg[argSize] = '\0';
+            cmd->arguments[size++] = arg;
+            argSize = 0;
+            arg = malloc(BUFF_LENGTH);
+            assertAlloc(arg);
+        }
+        else if(c != ' ')
+        {
+            arg[argSize++] = c;
         }
 
         if (argSize >= argCapacity)
@@ -201,38 +178,97 @@ void shParseLine(command *cmd)
         {
             resizeArr(cmd->arguments, capacity);
         }
-    } 
+    }
 
     // If currently 0 non-whitespace symbols are read, don't add new empty argument to cmd->arguments
     if (argSize != 0)
     {
         arg[argSize] = '\0';
         cmd->arguments[size++] = arg;
-        cmd->arguments[size] = NULL;
     }
-    else
+    else /*if (argSize == 0)*/
     {
-        cmd->arguments[size] = NULL;
         free(arg);
     }
 
-    shExecute(cmd);
+    cmd->arguments[size] = NULL;
 }
 
-int shExecute(command *cmd) 
+int shExecuteLine(command *cmd)
+{
+    int cmdOffset = 0;
+
+    for(int i = 0; cmd->arguments[i] != NULL; i++)
+    {
+        if (strchr(cmd->arguments[i], '&'))
+        {
+            cmd->background = 1;
+            char * tmp = cmd->arguments[i];
+            cmd->arguments[i] = NULL;
+
+            shExecute(cmd, cmdOffset);
+
+            cmd->arguments[i] = tmp;
+            cmdOffset = i+1;
+            cmd->background = 0;
+        }
+        else if (strchr(cmd->arguments[i], '>'))
+        {
+            if(cmd->arguments[i+1] == NULL)
+            {
+                write(STDERR_FILENO, "Missing file name for I/O redirection.\n", strlen("Missing file name for I/O redirection.\n"));
+                return -1;
+            }
+            int append = (strchr(cmd->arguments[i], '>')[1] == '>') ? O_APPEND : O_TRUNC;
+            commandAddRedirection(cmd, 1, cmd->arguments[i+1], O_WRONLY | O_CREAT | append);
+            free(cmd->arguments[i]);
+            free(cmd->arguments[i+1]);
+            int j = i;
+            for (j = i; cmd->arguments[i+2] != NULL; j++)
+            {
+                cmd->arguments[j] = cmd->arguments[j+2];
+            }
+            cmd->arguments[j] = NULL;
+            i--;
+        }
+        else if (strchr(cmd->arguments[i], '<'))
+        {
+            if(cmd->arguments[i+1] == NULL)
+            {
+                write(STDERR_FILENO, "Missing file name for I/O redirection.\n", strlen("Missing file name for I/O redirection.\n"));
+                return -1;
+            }
+            commandAddRedirection(cmd, 0, cmd->arguments[i+1], O_RDONLY);
+            free(cmd->arguments[i]);
+            free(cmd->arguments[i+1]);
+            int j;
+            for (j = i; cmd->arguments[i+2] != NULL; j++)
+            {
+                cmd->arguments[j] = cmd->arguments[j+2];
+            }
+            cmd->arguments[j] = NULL;
+            i--;
+        }
+    }
+
+    shExecute(cmd, cmdOffset);
+}
+
+int shExecute(command *cmd, int offset) 
 {
     int status = 0;
+    char **arguments = cmd->arguments + offset;
 
-    if (!cmd->arguments[0])
+    if (arguments[0] == NULL)
     {
         return 0;
     }
 
     for(int i = 0; i < builtinLen(); i++)
     {
-        if (strcmp(builtinNames[i], cmd->arguments[0]) == 0)
+        if (strcmp(builtinNames[i], arguments[0]) == 0)
         {
-            status = (*builtinFunc[i])(cmd->arguments);
+            status = (*builtinFunc[i])(arguments);
             return status;
         }
     }
@@ -241,10 +277,8 @@ int shExecute(command *cmd)
     switch(pid)
     {
         case 0: // child
-            dup2(cmd->fdi, STD_IN);
-            dup2(cmd->fdo, STD_OUT);
-            dup2(cmd->fderr, STD_ERR);
-            if (execvp(cmd->arguments[0], cmd->arguments) == -1) 
+            commandOpenFiles(cmd);
+            if (execvp(arguments[0], arguments) == -1) 
             {
                 perror("Can't create process");
                 exit(EXIT_FAILURE);
