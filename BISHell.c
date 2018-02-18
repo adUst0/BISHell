@@ -77,7 +77,6 @@ void shLoop(void)
         commandInit(cmd);
 
         write(STDOUT_FILENO, PROMPT, strlen(PROMPT));
-        
         shReadLine(cmd);
         shParseLine(cmd);
         shExecuteLine(cmd);
@@ -212,6 +211,24 @@ int shExecuteLine(command *cmd)
             cmdOffset = i+1;
             cmd->background = 0;
         }
+        else if (strchr(cmd->arguments[i], '|'))
+        {
+            cmd->pipe = 1;
+            char * tmp = cmd->arguments[i];
+            cmd->arguments[i] = NULL;
+
+            pipe(cmd->pipefd);
+            cmd->fdo = cmd->pipefd[1]; // cmd will write to the pipe
+
+            shExecute(cmd, cmdOffset);
+
+            close (cmd->pipefd[1]);
+            cmd->fdi = cmd->pipefd[0]; // next command will read from the current pipe
+            cmd->fdo = 1;
+
+            cmd->arguments[i] = tmp;
+            cmdOffset = i+1;
+        }
         else if (strchr(cmd->arguments[i], '>'))
         {
             if(cmd->arguments[i+1] == NULL)
@@ -251,7 +268,7 @@ int shExecuteLine(command *cmd)
         }
     }
 
-    shExecute(cmd, cmdOffset);
+    shExecute(cmd, cmdOffset); // execute the last command
 }
 
 int shExecute(command *cmd, int offset) 
@@ -278,6 +295,7 @@ int shExecute(command *cmd, int offset)
     {
         case 0: // child
             commandOpenFiles(cmd);
+            commandHandlePipe(cmd);
             if (execvp(arguments[0], arguments) == -1) 
             {
                 perror("Can't create process");
@@ -289,7 +307,7 @@ int shExecute(command *cmd, int offset)
             exit(EXIT_FAILURE);
             break;
         default: // father
-            if (!cmd->background) 
+            if (!cmd->background)
             {
                 waitpid(pid, &status, 0);
             }
