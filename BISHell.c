@@ -6,83 +6,13 @@
 #include <ctype.h>
 #include <sys/wait.h>
 #include "BISHell.h"
+#include "Utils.h"
 
-// Array of strings to store built-in commads.
-char *builtinNames[] = {
-    "cd",
-    "chdir",
-    "exit",
-    "q",
-    "quit"
-};
-
-// Array of pointers to handle the built-in commads.
-BuiltinFunc builtinFunc[] = {
-    &shChdir,
-    &shChdir,
-    &shExit,
-    &shExit,
-    &shExit
-};
-
-int builtinLen(void)
-{
-    return sizeof(builtinNames) / sizeof(char*);
-}
-
-int shChdir(char **arg_v)
-{
-    if (!arg_v[1])
-    {
-        if (HOME)
-        {
-            chdir(HOME);
-        }
-        else
-        {
-            write(STDOUT_FILENO, "cd: Missing argument\n", strlen("cd: Missing argument\n"));
-        }
-    }
-    else
-    {
-        if (chdir(arg_v[1]) != 0)
-        {
-            return EXIT_FAILURE;
-        }
-        else 
-        {
-            return EXIT_SUCCESS;
-        }
-    }
-}
-
-int shExit(char **arg_v) 
-{
-    exit(EXIT_SUCCESS);
-}
-
-void shInit(void) 
+void shInit(void)
 {
     if (HOME)
     {
         chdir(HOME);
-    }
-}
-
-void shLoop(void)
-{
-    while(1)
-    {
-        command *cmd = malloc(sizeof(command));
-        commandInit(cmd);
-
-        write(STDOUT_FILENO, PROMPT, strlen(PROMPT));
-        shReadLine(cmd);
-        shParseLine(cmd);
-        shExecuteLine(cmd);
-
-        commandDel(cmd);
-        free(cmd);
     }
 }
 
@@ -91,7 +21,22 @@ void shTerminate()
     exit(EXIT_SUCCESS);
 }
 
-void shReadLine(command *cmd) 
+void shLoop(void)
+{
+    while(1)
+    {
+        Command *cmd = CommandInit();
+
+        write(STDOUT_FILENO, PROMPT, strlen(PROMPT));
+        shReadLine(cmd);
+        shParseLine(cmd);
+        shExecuteLine(cmd);
+
+        CommandDel(cmd);
+    }
+}
+
+void shReadLine(Command *cmd) 
 {
     cmd->buff = malloc(BUFF_LENGTH);
     int buffCapacity = BUFF_LENGTH;
@@ -132,7 +77,7 @@ void shReadLine(command *cmd)
     }
 }
 
-void shParseLine(command *cmd) 
+void shParseLine(Command *cmd) 
 {
     int capacity = ARGUMENTS;
     int size = 0;
@@ -190,44 +135,42 @@ void shParseLine(command *cmd)
         free(arg);
     }
 
-    cmd->arguments[size] = NULL;
+    cmd->arguments[size] = NULL; 
+    cmd->argumentsCount = size;
 }
 
-int shExecuteLine(command *cmd)
+int shExecuteLine(Command *cmd)
 {
-    int cmdOffset = 0;
+    int first, last;
 
     for(int i = 0; cmd->arguments[i] != NULL; i++)
     {
         if (strchr(cmd->arguments[i], '&'))
-        {
+        { 
             cmd->background = 1;
-            char * tmp = cmd->arguments[i];
-            cmd->arguments[i] = NULL;
+            CommandPartialExecute(cmd, 0, i);
 
-            shExecute(cmd, cmdOffset);
+            first = 0, last = i + 1;
+            CommandEraseArguments(cmd, first, last);
+            i -= (last - first);
 
-            cmd->arguments[i] = tmp;
-            cmdOffset = i+1;
             cmd->background = 0;
+            CommandResetRedirections(cmd);
         }
         else if (strchr(cmd->arguments[i], '|'))
         {
-            cmd->pipe = 1;
-            char * tmp = cmd->arguments[i];
-            cmd->arguments[i] = NULL;
-
+        	cmd->pipe = 1;
             pipe(cmd->pipefd);
             cmd->fdo = cmd->pipefd[1]; // cmd will write to the pipe
 
-            shExecute(cmd, cmdOffset);
+            CommandPartialExecute(cmd, 0, i);
+            first = 0, last = i + 1;
+            CommandEraseArguments(cmd, first, last);
+            i -= (last - first);
 
             close (cmd->pipefd[1]);
-            cmd->fdi = cmd->pipefd[0]; // next command will read from the current pipe
+            cmd->fdi = cmd->pipefd[0]; // next Command will read from the current pipe
             cmd->fdo = 1;
-
-            cmd->arguments[i] = tmp;
-            cmdOffset = i+1;
         }
         else if (strchr(cmd->arguments[i], '>'))
         {
@@ -237,16 +180,11 @@ int shExecuteLine(command *cmd)
                 return -1;
             }
             int append = (strchr(cmd->arguments[i], '>')[1] == '>') ? O_APPEND : O_TRUNC;
-            commandAddRedirection(cmd, 1, cmd->arguments[i+1], O_WRONLY | O_CREAT | append);
-            free(cmd->arguments[i]);
-            free(cmd->arguments[i+1]);
-            int j = i;
-            for (j = i; cmd->arguments[i+2] != NULL; j++)
-            {
-                cmd->arguments[j] = cmd->arguments[j+2];
-            }
-            cmd->arguments[j] = NULL;
-            i--;
+            CommandAddRedirection(cmd, STDOUT_FILENO, cmd->arguments[i+1], O_WRONLY | O_CREAT | append);
+            
+            first = i, last = i + 2;
+            CommandEraseArguments(cmd, first, last);
+            i -= (last - first);
         }
         else if (strchr(cmd->arguments[i], '<'))
         {
@@ -255,70 +193,14 @@ int shExecuteLine(command *cmd)
                 write(STDERR_FILENO, "Missing file name for I/O redirection.\n", strlen("Missing file name for I/O redirection.\n"));
                 return -1;
             }
-            commandAddRedirection(cmd, 0, cmd->arguments[i+1], O_RDONLY);
-            free(cmd->arguments[i]);
-            free(cmd->arguments[i+1]);
-            int j;
-            for (j = i; cmd->arguments[i+2] != NULL; j++)
-            {
-                cmd->arguments[j] = cmd->arguments[j+2];
-            }
-            cmd->arguments[j] = NULL;
-            i--;
+            CommandAddRedirection(cmd, STDIN_FILENO, cmd->arguments[i+1], O_RDONLY);
+            first = i, last = i + 2;
+            CommandEraseArguments(cmd, first, last);
+            i -= (last - first);
         }
     }
 
-    shExecute(cmd, cmdOffset); // execute the last command
-}
-
-int shExecute(command *cmd, int offset) 
-{
-    int status = 0;
-    char **arguments = cmd->arguments + offset;
-
-    if (arguments[0] == NULL)
-    {
-        return 0;
-    }
-
-    for(int i = 0; i < builtinLen(); i++)
-    {
-        if (strcmp(builtinNames[i], arguments[0]) == 0)
-        {
-            status = (*builtinFunc[i])(arguments);
-            return status;
-        }
-    }
-
-    int pid = fork();
-    switch(pid)
-    {
-        case 0: // child
-            commandOpenFiles(cmd);
-            commandHandlePipe(cmd);
-            if (execvp(arguments[0], arguments) == -1) 
-            {
-                perror("Can't create process");
-                exit(EXIT_FAILURE);
-            }
-            break;
-        case -1:
-            perror("Can't fork");
-            exit(EXIT_FAILURE);
-            break;
-        default: // father
-            if (!cmd->background)
-            {
-                waitpid(pid, &status, 0);
-            }
-            else
-            {
-                printf("Background process created with PID: %d\n", pid);
-            }
-            break;
-    }
-
-    return status;  
+    return CommandExecute(cmd); // execute the last command
 }
 
 int main()
